@@ -10,10 +10,11 @@ import { type Observable, map, tap } from 'rxjs';
 import type { ApiResponse } from '@nova/shared';
 
 /**
- * Wraps every successful controller result into the `{ data, meta }` envelope.
+ * Wraps every successful controller result into the `{ data }` envelope.
  *
- * Handlers that already return a paginated envelope (`{ data, meta }`) are left
- * untouched so list endpoints keep their pagination metadata.
+ * The wrapping is unconditional — a paginated handler result becomes
+ * `{ data: { data, meta } }` — so clients can always unwrap exactly one level,
+ * whatever the endpoint returns.
  */
 @Injectable()
 export class TransformInterceptor<T> implements NestInterceptor<T, ApiResponse<T> | T> {
@@ -23,15 +24,7 @@ export class TransformInterceptor<T> implements NestInterceptor<T, ApiResponse<T
    * @returns Stream of enveloped responses.
    */
   public intercept(context: ExecutionContext, next: CallHandler<T>): Observable<ApiResponse<T> | T> {
-    return next.handle().pipe(
-      map((payload) => {
-        const isEnvelope =
-          payload !== null &&
-          typeof payload === 'object' &&
-          'data' in (payload as Record<string, unknown>);
-        return isEnvelope ? payload : { data: payload };
-      }),
-    );
+    return next.handle().pipe(map((payload) => ({ data: payload })));
   }
 }
 
