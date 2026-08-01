@@ -1,0 +1,32 @@
+{
+  "name": "nova-streaming",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NOVA — enterprise streaming platform (Next.js + NestJS + PostgreSQL + Redis)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @nova/shared && npm run build --workspace @nova/api && npm run build --workspace @nova/web",
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "npm run dev --workspace @nova/api",
+    "dev:web": "npm run dev --workspace @nova/web",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspace @nova/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace @nova/api",
+    "db:migrate": "npm run db:migrate --workspace @nova/api",
+    "db:seed": "npm run db:seed --workspace @nova/api",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

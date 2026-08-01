@@ -1,0 +1,332 @@
+// NOVA — PostgreSQL persistence schema.
+//
+// The schema mirrors the aggregates of the domain layer one-to-one, but the
+// domain never imports these types: repositories map between Prisma rows and
+// domain entities, so the storage engine stays replaceable.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Authentication and billing owner. Owns 1..n viewing profiles.
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  displayName       String
+  passwordHash      String
+  role              UserRole  @default(MEMBER)
+  emailVerified     Boolean   @default(false)
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  recoveryCodes     String[]  @default([])
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  lastLoginAt       DateTime?
+
+  profiles          Profile[]
+  oauthAccounts     OAuthAccount[]
+  refreshTokens     RefreshToken[]
+  subscription      Subscription?
+  notifications     Notification[]
+  pushSubscriptions PushSubscription[]
+
+  @@index([createdAt])
+  @@map("users")
+}
+
+/// Federated identity linked to an account (Google, GitHub, ...).
+model OAuthAccount {
+  id                String   @id @default(uuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+/// Hashed refresh token, one row per active device session.
+model RefreshToken {
+  id         String   @id @default(uuid())
+  userId     String
+  tokenHash  String   @unique
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// Viewing profile: personalisation, parental controls and playback settings.
+model Profile {
+  id                  String         @id @default(uuid())
+  userId              String
+  name                String
+  avatarKey           String         @default("nebula")
+  isKids              Boolean        @default(false)
+  language            String         @default("hu")
+  maturityLevel       MaturityRating @default(EIGHTEEN_PLUS)
+  autoplayNextEpisode Boolean        @default(true)
+  autoplayPreviews    Boolean        @default(true)
+  pinHash             String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  watchlist WatchlistItem[]
+  progress  PlaybackProgress[]
+  views     ViewEvent[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("profiles")
+}
+
+/// Catalog aggregate root: a movie or a series.
+model Title {
+  id                String         @id @default(uuid())
+  slug              String         @unique
+  name              String
+  kind              TitleKind
+  tagline           String         @default("")
+  synopsis          String
+  releaseYear       Int
+  maturityRating    MaturityRating
+  durationSeconds   Int?
+  genres            String[]       @default([])
+  moods             String[]       @default([])
+  cast              String[]       @default([])
+  directors         String[]       @default([])
+  writers           String[]       @default([])
+  country           String         @default("HU")
+  languages         String[]       @default([])
+  subtitleLanguages String[]       @default([])
+  audioLanguages    String[]       @default([])
+  isOriginal        Boolean        @default(false)
+  isPublished       Boolean        @default(true)
+  popularity        Int            @default(0)
+  trendingScore     Int            @default(0)
+  trailerAssetKey   String         @default("")
+  assetKey          String?
+  publishedAt       DateTime       @default(now())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  seasons   Season[]
+  watchlist WatchlistItem[]
+  progress  PlaybackProgress[]
+  views     ViewEvent[]
+
+  @@index([kind, isPublished])
+  @@index([publishedAt])
+  @@map("titles")
+}
+
+/// A season of a series.
+model Season {
+  id           String  @id @default(uuid())
+  titleId      String
+  seasonNumber Int
+  name         String
+
+  title    Title     @relation(fields: [titleId], references: [id], onDelete: Cascade)
+  episodes Episode[]
+
+  @@unique([titleId, seasonNumber])
+  @@map("seasons")
+}
+
+/// A single episode with its packaged playback asset.
+model Episode {
+  id              String @id @default(uuid())
+  seasonId        String
+  titleId         String
+  episodeNumber   Int
+  name            String
+  synopsis        String
+  durationSeconds Int
+  assetKey        String
+
+  season   Season             @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  progress PlaybackProgress[]
+  views    ViewEvent[]
+
+  @@unique([seasonId, episodeNumber])
+  @@index([titleId])
+  @@map("episodes")
+}
+
+/// "My list" entry.
+model WatchlistItem {
+  id        String   @id @default(uuid())
+  profileId String
+  titleId   String
+  createdAt DateTime @default(now())
+
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title   Title   @relation(fields: [titleId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, titleId])
+  @@index([profileId])
+  @@map("watchlist_items")
+}
+
+/// Resume point powering the "Folytasd a nézést" row.
+model PlaybackProgress {
+  id              String   @id @default(uuid())
+  profileId       String
+  titleId         String
+  episodeId       String?
+  positionSeconds Int      @default(0)
+  durationSeconds Int
+  completed       Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+  createdAt       DateTime @default(now())
+
+  profile Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title   Title    @relation(fields: [titleId], references: [id], onDelete: Cascade)
+  episode Episode? @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+
+  @@unique([profileId, titleId, episodeId])
+  @@index([profileId, updatedAt])
+  @@map("playback_progress")
+}
+
+/// Append-only analytics fact table.
+model ViewEvent {
+  id            String   @id @default(uuid())
+  profileId     String
+  titleId       String
+  episodeId     String?
+  watchedSeconds Int     @default(0)
+  device        String   @default("web")
+  createdAt     DateTime @default(now())
+
+  profile Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  title   Title    @relation(fields: [titleId], references: [id], onDelete: Cascade)
+  episode Episode? @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([titleId])
+  @@map("view_events")
+}
+
+/// Recurring subscription mirrored from the payment provider.
+model Subscription {
+  id                     String             @id @default(uuid())
+  userId                 String             @unique
+  plan                   PlanTier           @default(STANDARD)
+  status                 SubscriptionStatus @default(TRIALING)
+  currentPeriodStart     DateTime           @default(now())
+  currentPeriodEnd       DateTime
+  cancelAtPeriodEnd      Boolean            @default(false)
+  providerCustomerId     String?
+  providerSubscriptionId String?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+
+  @@map("subscriptions")
+}
+
+/// Issued invoice, kept locally for the billing history screen.
+model Invoice {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  amountMinor    Int
+  currency       String   @default("HUF")
+  status         String   @default("paid")
+  issuedAt       DateTime @default(now())
+  hostedUrl      String?
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("invoices")
+}
+
+/// Member facing notification (in-app bell, e-mail or push).
+model Notification {
+  id        String              @id @default(uuid())
+  userId    String
+  channel   NotificationChannel @default(IN_APP)
+  subject   String
+  body      String
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+/// Browser push subscription registered by the PWA service worker.
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+enum UserRole {
+  MEMBER
+  ADMIN
+}
+
+enum TitleKind {
+  MOVIE
+  SERIES
+}
+
+enum MaturityRating {
+  ALL
+  SEVEN_PLUS
+  TWELVE_PLUS
+  SIXTEEN_PLUS
+  EIGHTEEN_PLUS
+}
+
+enum PlanTier {
+  BASIC
+  STANDARD
+  PREMIUM
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  IN_APP
+}
