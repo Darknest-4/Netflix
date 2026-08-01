@@ -6,11 +6,22 @@
     "rootDir": "./src",
     "outDir": "./dist",
     "baseUrl": "./",
-    "types": ["node", "jest"],
+    "types": [
+      "node",
+      "jest"
+    ],
     "strictPropertyInitialization": false,
     "declaration": false,
-    "declarationMap": false
+    "declarationMap": false,
+    "isolatedModules": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test",
+    "**/*.spec.ts"
+  ]
 }

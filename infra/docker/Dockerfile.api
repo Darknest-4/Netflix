@@ -1,0 +1,47 @@
+# ─── NOVA API image ───────────────────────────────────────────────────────────
+# Multi-stage build: the runtime image contains only production dependencies
+# and the compiled JavaScript, and runs as an unprivileged user.
+
+FROM node:22-alpine AS deps
+WORKDIR /repo
+RUN apk add --no-cache libc6-compat openssl
+
+COPY package.json package-lock.json ./
+COPY packages/shared/package.json packages/shared/
+COPY apps/api/package.json apps/api/
+COPY apps/web/package.json apps/web/
+COPY apps/api/prisma apps/api/prisma
+RUN npm ci --ignore-scripts
+
+FROM deps AS build
+WORKDIR /repo
+COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY apps/api apps/api
+RUN npm run build --workspace @nova/shared \
+ && npm exec --workspace @nova/api -- prisma generate \
+ && npm run build --workspace @nova/api
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+RUN apk add --no-cache openssl \
+ && addgroup -g 1001 -S nodejs \
+ && adduser -S nova -u 1001
+
+ENV NODE_ENV=production
+ENV PORT=4000
+
+COPY --from=build /repo/node_modules ./node_modules
+COPY --from=build /repo/packages/shared/dist ./node_modules/@nova/shared/dist
+COPY --from=build /repo/packages/shared/package.json ./node_modules/@nova/shared/package.json
+COPY --from=build /repo/apps/api/dist ./dist
+COPY --from=build /repo/apps/api/prisma ./prisma
+COPY --from=build /repo/apps/api/package.json ./package.json
+
+USER nova
+EXPOSE 4000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://localhost:4000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "dist/main.js"]

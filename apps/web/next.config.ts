@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import type { NextConfig } from 'next';
 
 /**
@@ -11,6 +13,9 @@ import type { NextConfig } from 'next';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Emits a self-contained server bundle for the container image.
+  output: 'standalone',
+  outputFileTracingRoot: path.join(import.meta.dirname, '../../'),
   transpilePackages: ['@nova/shared'],
   compress: true,
   images: {

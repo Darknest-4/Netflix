@@ -65,6 +65,14 @@ export interface AppConfig {
     /** Fallback asset used by the demo catalog. */
     demoHlsUrl: string;
   };
+  security: {
+    /** Rate limit window in milliseconds. */
+    throttleTtlMs: number;
+    /** Requests allowed per window on ordinary endpoints. */
+    throttleLimit: number;
+    /** Requests allowed per window on the authentication endpoints. */
+    authThrottleLimit: number;
+  };
 }
 
 /**
@@ -179,6 +187,11 @@ export function configuration(): AppConfig {
         'DEMO_HLS_URL',
         'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
       ),
+    },
+    security: {
+      throttleTtlMs: num('THROTTLE_TTL_MS', 60_000),
+      throttleLimit: num('THROTTLE_LIMIT', 120),
+      authThrottleLimit: num('AUTH_THROTTLE_LIMIT', 10),
     },
   };
 }

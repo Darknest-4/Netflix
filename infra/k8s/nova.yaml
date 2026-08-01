@@ -1,0 +1,368 @@
+# ─── NOVA Kubernetes manifests ────────────────────────────────────────────────
+# Applies the whole platform to a cluster:
+#   kubectl apply -f infra/k8s/nova.yaml
+#
+# Secrets are placeholders — in a real cluster they come from an external secret
+# store (Sealed Secrets, External Secrets Operator, Vault), never from git.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nova
+  labels:
+    app.kubernetes.io/name: nova
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nova-config
+  namespace: nova
+data:
+  NODE_ENV: production
+  API_PREFIX: api/v1
+  PORT: '4000'
+  CORS_ORIGINS: https://nova.example
+  WEB_APP_URL: https://nova.example
+  REDIS_URL: redis://nova-redis:6379
+  CACHE_TTL_SECONDS: '60'
+  S3_REGION: eu-central-1
+  S3_BUCKET: nova-media
+  S3_PUBLIC_BASE_URL: https://cdn.nova.example/nova-media
+  CDN_BASE_URL: https://cdn.nova.example/packaged
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nova-secrets
+  namespace: nova
+type: Opaque
+stringData:
+  DATABASE_URL: postgresql://nova:CHANGE_ME@nova-postgres:5432/nova?schema=public
+  JWT_ACCESS_SECRET: CHANGE_ME_ACCESS
+  JWT_REFRESH_SECRET: CHANGE_ME_REFRESH
+  STRIPE_SECRET_KEY: ''
+  STRIPE_WEBHOOK_SECRET: ''
+  S3_ACCESS_KEY_ID: ''
+  S3_SECRET_ACCESS_KEY: ''
+  WEB_PUSH_PUBLIC_KEY: ''
+  WEB_PUSH_PRIVATE_KEY: ''
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nova-postgres
+  namespace: nova
+spec:
+  serviceName: nova-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nova-postgres
+  template:
+    metadata:
+      labels:
+        app: nova-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: nova
+            - name: POSTGRES_DB
+              value: nova
+            - name: POSTGRES_PASSWORD
+              value: CHANGE_ME
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ['pg_isready', '-U', 'nova']
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ['ReadWriteOnce']
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova-postgres
+  namespace: nova
+spec:
+  selector:
+    app: nova-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova-redis
+  namespace: nova
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nova-redis
+  template:
+    metadata:
+      labels:
+        app: nova-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ['--appendonly', 'yes']
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova-redis
+  namespace: nova
+spec:
+  selector:
+    app: nova-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+# Runs the Prisma migrations before a new API version starts serving traffic.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-migrate
+  namespace: nova
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/nova/api:latest
+          command: ['npx', 'prisma', 'migrate', 'deploy']
+          envFrom:
+            - secretRef:
+                name: nova-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova-api
+  namespace: nova
+  labels:
+    app: nova-api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: nova-api
+  template:
+    metadata:
+      labels:
+        app: nova-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: api
+          image: ghcr.io/nova/api:latest
+          ports:
+            - containerPort: 4000
+          envFrom:
+            - configMapRef:
+                name: nova-config
+            - secretRef:
+                name: nova-secrets
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 4000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 4000
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              cpu: '1'
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova-api
+  namespace: nova
+spec:
+  selector:
+    app: nova-api
+  ports:
+    - port: 80
+      targetPort: 4000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nova-web
+  namespace: nova
+  labels:
+    app: nova-web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nova-web
+  template:
+    metadata:
+      labels:
+        app: nova-web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: web
+          image: ghcr.io/nova/web:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: https://api.nova.example/api/v1
+            - name: NEXT_PUBLIC_SITE_URL
+              value: https://nova.example
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 8
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 800m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nova-web
+  namespace: nova
+spec:
+  selector:
+    app: nova-web
+  ports:
+    - port: 80
+      targetPort: 3000
+---
+# Scales the API on CPU pressure; playback traffic is spiky by nature.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nova-api
+  namespace: nova
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nova-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nova-api
+  namespace: nova
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: nova-api
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nova
+  namespace: nova
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - nova.example
+        - api.nova.example
+      secretName: nova-tls
+  rules:
+    - host: nova.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nova-web
+                port:
+                  number: 80
+    - host: api.nova.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nova-api
+                port:
+                  number: 80

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { API_ROUTES, TitleKind, type PlaybackManifestDto, type TitleDetailDto } from '@nova/shared';
 
 import { Button } from '@/components/ui/Button';
@@ -28,6 +28,8 @@ export function TitleActions({ title }: TitleActionsProps): React.JSX.Element {
   const { notify } = useToast();
 
   const [inMyList, setInMyList] = useState(false);
+  /** Set once the member toggles, so an in-flight fetch cannot overwrite it. */
+  const toggledByUser = useRef(false);
   const [trailer, setTrailer] = useState<PlaybackManifestDto | null>(null);
   const [loadingTrailer, setLoadingTrailer] = useState(false);
 
@@ -40,7 +42,9 @@ export function TitleActions({ title }: TitleActionsProps): React.JSX.Element {
     let cancelled = false;
     void authFetch<{ id: string }[]>(API_ROUTES.watchlist.list(activeProfile.id))
       .then((list) => {
-        if (!cancelled) {
+        // A toggle that happened while this request was in flight is the newer
+        // truth — never let the stale response overwrite it.
+        if (!cancelled && !toggledByUser.current) {
           setInMyList(list.some((entry) => entry.id === title.id));
         }
       })
@@ -57,6 +61,7 @@ export function TitleActions({ title }: TitleActionsProps): React.JSX.Element {
       notify('Válassz profilt a listád használatához.', 'info');
       return;
     }
+    toggledByUser.current = true;
     try {
       const result = await authFetch<{ inMyList: boolean }>(
         API_ROUTES.watchlist.toggle(activeProfile.id, title.id),

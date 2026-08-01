@@ -1,6 +1,6 @@
 import { Controller, Get, Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -8,7 +8,7 @@ import { BRAND_NAME } from '@nova/shared';
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 
-import { configuration } from './config/configuration';
+import { configuration, type AppConfig } from './config/configuration';
 import { InfrastructureModule } from './common/infrastructure/infrastructure.module';
 import { AllExceptionsFilter } from './common/presentation/filters/all-exceptions.filter';
 import {
@@ -57,7 +57,13 @@ export class HealthController {
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration], cache: true }),
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 120 }]),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<AppConfig, true>) => {
+        const security = config.get('security', { infer: true });
+        return [{ name: 'default', ttl: security.throttleTtlMs, limit: security.throttleLimit }];
+      },
+    }),
     InfrastructureModule,
     IdentityModule,
     ProfilesModule,

@@ -28,6 +28,18 @@ import {
 } from './dto/auth.dto';
 
 /**
+ * Rate limit applied to the credential endpoints.
+ *
+ * Read from the environment at module load so that end-to-end suites and load
+ * tests can raise it without touching the production default of 10 attempts per
+ * minute, which is what protects the login form from credential stuffing.
+ */
+const AUTH_RATE_LIMIT = {
+  limit: Number(process.env.AUTH_THROTTLE_LIMIT ?? 10),
+  ttl: Number(process.env.THROTTLE_TTL_MS ?? 60_000),
+};
+
+/**
  * Authentication endpoints.
  *
  * The controller is a thin adapter: it validates input, calls a single use
@@ -68,7 +80,7 @@ export class AuthController {
    */
   @Public()
   @Post('register')
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ default: { limit: Math.max(3, Math.floor(AUTH_RATE_LIMIT.limit / 2)), ttl: AUTH_RATE_LIMIT.ttl } })
   @ApiOperation({ summary: 'Regisztráció és azonnali bejelentkezés' })
   public async register(@Body() dto: RegisterDto, @Req() request: Request): Promise<AuthResultDto> {
     return this.registerUser.execute({
@@ -90,7 +102,7 @@ export class AuthController {
   @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Throttle({ default: AUTH_RATE_LIMIT })
   @ApiOperation({ summary: 'Bejelentkezés (jelszó + opcionális 2FA)' })
   public async login(@Body() dto: LoginDto, @Req() request: Request): Promise<AuthResultDto> {
     return this.loginUser.execute({

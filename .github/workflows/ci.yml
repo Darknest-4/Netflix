@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # Static analysis: type safety across every workspace.
+  typecheck:
+    name: Típusellenőrzés
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace @nova/shared
+      - run: npm run typecheck --workspaces --if-present
+
+  # Unit tests of the domain and application layers.
+  test-api:
+    name: API tesztek
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace @nova/shared
+      - run: npm run test --workspace @nova/api
+      - name: Lefedettség feltöltése
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: apps/api/coverage
+          if-no-files-found: ignore
+
+  # End-to-end tests against a real API and a production web build.
+  e2e:
+    name: E2E tesztek
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace @nova/shared
+      - run: npm run build --workspace @nova/api
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: API indítása
+        run: |
+          node apps/api/dist/main.js &
+          npx wait-on http://localhost:4000/api/v1/health --timeout 60000
+        env:
+          PORT: '4000'
+          PERSISTENCE_DRIVER: memory
+      - run: npm run build --workspace @nova/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+      - run: npm run test:e2e --workspace @nova/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+
+  # Container images are built on every push so a broken Dockerfile fails fast.
+  docker:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    needs: [typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile.api
+          push: false
+          tags: nova/api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile.web
+          push: false
+          tags: nova/web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Dependency audit — advisory only, so a new CVE never blocks a hotfix.
+  audit:
+    name: Függőség audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
